@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+googlesearch-python
+beautifulsoup4
+requests
+openai
+pydantic
+celery
+redis
+jinja2
