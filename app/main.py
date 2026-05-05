@@ -105,6 +105,73 @@ def get_craft(craft_id: int, db: Session = Depends(get_session)):
     }
 
 
+# ── Craft Update ─────────────────────────────────────────────────────────────
+
+class CraftUpdateModel(PyBaseModel):
+    name: Optional[str] = None
+    alternative_names: Optional[str] = None
+    country_of_origin: Optional[str] = None
+    designer: Optional[str] = None
+    manufacturer: Optional[str] = None
+    craft_type: Optional[str] = None
+    operational_era: Optional[str] = None
+    year_introduced: Optional[int] = None
+    status: Optional[str] = None
+    description_history: Optional[str] = None
+    operational_history: Optional[str] = None
+    known_accidents: Optional[str] = None
+    current_location: Optional[str] = None
+    # Specification fields
+    length_m: Optional[float] = None
+    beam_m: Optional[float] = None
+    wingspan_m: Optional[float] = None
+    height_m: Optional[float] = None
+    max_takeoff_weight_kg: Optional[float] = None
+    payload_capacity_kg: Optional[float] = None
+    max_speed_kmh: Optional[float] = None
+    cruise_speed_kmh: Optional[float] = None
+    range_km: Optional[float] = None
+    ground_effect_altitude_m: Optional[float] = None
+    wing_configuration: Optional[str] = None
+
+@app.patch("/api/crafts/{craft_id}")
+def update_craft(craft_id: int, payload: CraftUpdateModel, db: Session = Depends(get_session)):
+    craft = db.query(Craft).filter(Craft.id == craft_id).first()
+    if not craft:
+        raise HTTPException(status_code=404, detail="Craft not found")
+
+    craft_fields = [
+        'name', 'alternative_names', 'country_of_origin', 'designer', 'manufacturer',
+        'craft_type', 'operational_era', 'year_introduced', 'status',
+        'description_history', 'operational_history', 'known_accidents', 'current_location'
+    ]
+    spec_fields = [
+        'length_m', 'beam_m', 'wingspan_m', 'height_m', 'max_takeoff_weight_kg',
+        'payload_capacity_kg', 'max_speed_kmh', 'cruise_speed_kmh', 'range_km',
+        'ground_effect_altitude_m', 'wing_configuration'
+    ]
+
+    update_data = payload.model_dump(exclude_unset=True)
+
+    for field in craft_fields:
+        if field in update_data:
+            setattr(craft, field, update_data[field])
+
+    spec_updates = {f: update_data[f] for f in spec_fields if f in update_data}
+    if spec_updates:
+        if craft.specifications:
+            for field, value in spec_updates.items():
+                setattr(craft.specifications, field, value)
+        else:
+            from app.models import Specification
+            spec = Specification(craft_id=craft_id, **spec_updates)
+            db.add(spec)
+
+    db.commit()
+    db.refresh(craft)
+    return {"success": True, "id": craft.id}
+
+
 # ── Manual URL Ingestion (SSE Streaming) ──────────────────────────────────────
 
 class CrawlRequest(PyBaseModel):

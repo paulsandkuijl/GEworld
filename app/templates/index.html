@@ -39,6 +39,30 @@
         #crawlStatus { transition: all 0.3s ease; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner { animation: spin 1s linear infinite; }
+        /* ── Edit mode ── */
+        .edit-input {
+            border: 1.5px solid rgba(59,130,246,0.45);
+            border-radius: 8px; padding: 3px 10px;
+            font-size: 14px; font-weight: 500; color: #1D1D1F;
+            background: rgba(255,255,255,0.95); outline: none;
+            transition: all 0.2s; text-align: right; min-width: 80px;
+        }
+        .edit-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+        .edit-input-left { text-align: left; width: 100%; }
+        .edit-textarea {
+            width: 100%; border: 1.5px solid rgba(59,130,246,0.4);
+            border-radius: 10px; padding: 10px 14px; font-size: 14px;
+            color: #374151; background: rgba(255,255,255,0.95); outline: none;
+            resize: vertical; line-height: 1.6; transition: all 0.2s;
+            font-family: inherit; min-height: 80px;
+        }
+        .edit-textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+        .edit-banner {
+            background: linear-gradient(135deg,rgba(59,130,246,0.07),rgba(139,92,246,0.07));
+            border: 1px solid rgba(59,130,246,0.2); border-radius: 12px;
+            padding: 8px 14px; margin-bottom: 18px; font-size: 12px;
+            color: #3b82f6; font-weight: 500; letter-spacing: 0.03em;
+        }
         .crawl-panel {
             background: linear-gradient(135deg, rgba(0,122,255,0.06), rgba(88,86,214,0.06));
             border: 1px solid rgba(0,122,255,0.15);
@@ -133,10 +157,21 @@
 
         <!-- DETAIL VIEW -->
         <div id="detailView" class="hidden animate-fade-in">
-            <button onclick="showListView()" class="mb-6 text-blue-500 hover:text-blue-700 font-medium flex items-center transition-colors">
-                <svg class="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
-                Back to List
-            </button>
+            <div class="mb-6 flex items-center justify-between">
+                <button onclick="showListView()" class="text-blue-500 hover:text-blue-700 font-medium flex items-center transition-colors">
+                    <svg class="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+                    Back to List
+                </button>
+                <div class="flex items-center gap-2">
+                    <button id="saveCraftBtn" onclick="saveCraftEdits()" class="hidden px-4 py-2 rounded-xl bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 active:scale-95 transition-all shadow">
+                        Save Changes
+                    </button>
+                    <button id="editToggleBtn" onclick="toggleEditMode()" class="px-4 py-2 rounded-xl text-sm font-medium bg-white border border-gray-200 hover:border-blue-400 hover:text-blue-600 active:scale-95 transition-all shadow-sm flex items-center gap-2">
+                        <svg id="editBtnIcon" class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536M9 11l6.071-6.071 3.535 3.535L12.536 14H9v-3z" /></svg>
+                        <span id="editBtnText">Edit</span>
+                    </button>
+                </div>
+            </div>
             <div id="detailContent"></div>
         </div>
     </div>
@@ -144,6 +179,9 @@
     <script>
         // Data and navigation logic
         let currentCrafts = [];
+        let isEditing = false;
+        let currentCraftData = null;
+        let currentCraftId = null;
 
         async function fetchCrafts(query = '') {
             try {
@@ -160,18 +198,135 @@
         }
 
         async function showCraftDetails(craftId) {
+            currentCraftId = craftId;
+            isEditing = false;
+            resetEditBtn();
             document.getElementById('listView').classList.add('hidden');
             document.getElementById('detailView').classList.remove('hidden');
             document.getElementById('detailContent').innerHTML = '<p class="text-gray-500">Loading details...</p>';
-            
             try {
                 const response = await fetch('/api/crafts/' + craftId);
                 const craft = await response.json();
+                currentCraftData = craft;
                 renderDetailView(craft);
             } catch (error) {
                 console.error("Failed to fetch craft details", error);
                 document.getElementById('detailContent').innerHTML = '<p class="text-red-500">Failed to load detail data.</p>';
             }
+        }
+
+        function resetEditBtn() {
+            document.getElementById('editBtnText').textContent = 'Edit';
+            const saveBtn = document.getElementById('saveCraftBtn');
+            saveBtn.classList.add('hidden');
+            saveBtn.textContent = 'Save Changes';
+            saveBtn.disabled = false;
+            document.getElementById('editBtnIcon').innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536M9 11l6.071-6.071 3.535 3.535L12.536 14H9v-3z" />';
+        }
+
+        function toggleEditMode() {
+            isEditing = !isEditing;
+            if (isEditing) {
+                document.getElementById('editBtnText').textContent = 'Cancel';
+                document.getElementById('saveCraftBtn').classList.remove('hidden');
+                document.getElementById('editBtnIcon').innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />';
+                renderDetailViewEdit(currentCraftData);
+            } else {
+                resetEditBtn();
+                renderDetailView(currentCraftData);
+            }
+        }
+
+        async function saveCraftEdits() {
+            const payload = {};
+            document.querySelectorAll('[data-field]').forEach(el => {
+                const field = el.dataset.field;
+                const raw = el.value.trim();
+                if (el.type === 'number') {
+                    payload[field] = raw !== '' ? parseFloat(raw) : null;
+                } else {
+                    payload[field] = raw || null;
+                }
+            });
+            const btn = document.getElementById('saveCraftBtn');
+            btn.textContent = 'Saving...';
+            btn.disabled = true;
+            try {
+                const res = await fetch('/api/crafts/' + currentCraftId, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error('Server error ' + res.status);
+                // Refresh data
+                const updated = await fetch('/api/crafts/' + currentCraftId);
+                currentCraftData = await updated.json();
+                isEditing = false;
+                resetEditBtn();
+                renderDetailView(currentCraftData);
+                await fetchCrafts();
+            } catch (err) {
+                btn.textContent = 'Error — Retry';
+                btn.disabled = false;
+                alert('Save failed: ' + err.message);
+            }
+        }
+
+        function renderDetailViewEdit(craft) {
+            const primaryImage = craft.media && craft.media.length > 0 ? craft.media[0].url : null;
+            const imgHTML = primaryImage
+                ? `<img src="${primaryImage}" alt="${craft.name}" class="w-full h-80 object-cover rounded-xl mb-8 shadow-md">`
+                : `<div class="w-full h-40 bg-gray-200 rounded-xl mb-8 flex items-center justify-center text-gray-400">No image available</div>`;
+            const s = craft.specifications || {};
+            const numRow = (label, field, val) =>
+                `<div class="py-3 border-b border-gray-100 flex justify-between items-center gap-4">
+                    <span class="text-gray-500 shrink-0">${label}</span>
+                    <input type="number" step="any" data-field="${field}" value="${val ?? ''}" class="edit-input" placeholder="—">
+                </div>`;
+            const txtRow = (label, field, val) =>
+                `<div class="py-3 border-b border-gray-100 flex justify-between items-center gap-4">
+                    <span class="text-gray-500 shrink-0">${label}</span>
+                    <input type="text" data-field="${field}" value="${(val ?? '').replace(/"/g,'&quot;')}" class="edit-input edit-input-left" placeholder="—">
+                </div>`;
+            document.getElementById('detailContent').innerHTML = `
+                <div class="edit-banner">✏ Edit mode — modify any field then click Save Changes</div>
+                ${imgHTML}
+                <div class="flex flex-wrap items-center gap-3 mb-2">
+                    <input type="text" data-field="name" value="${(craft.name||'').replace(/"/g,'&quot;')}" class="edit-input edit-input-left text-3xl font-semibold" style="font-size:1.875rem;padding:4px 12px" placeholder="Craft name">
+                    <input type="text" data-field="status" value="${(craft.status||'').replace(/"/g,'&quot;')}" class="edit-input edit-input-left text-sm" style="max-width:160px" placeholder="Status">
+                </div>
+                <div class="flex flex-wrap gap-2 mb-8">
+                    <input type="text" data-field="designer" value="${(craft.designer||'').replace(/"/g,'&quot;')}" class="edit-input edit-input-left text-sm" style="max-width:200px" placeholder="Designer">
+                    <input type="text" data-field="country_of_origin" value="${(craft.country_of_origin||'').replace(/"/g,'&quot;')}" class="edit-input edit-input-left text-sm" style="max-width:160px" placeholder="Country">
+                    <input type="number" data-field="year_introduced" value="${craft.year_introduced??''}" class="edit-input text-sm" style="max-width:100px;text-align:left" placeholder="Year">
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-12">
+                    <div>
+                        <h3 class="text-xl font-medium mb-3">Overview &amp; History</h3>
+                        <textarea data-field="description_history" class="edit-textarea mb-4" placeholder="Description / history...">${craft.description_history||''}</textarea>
+                        <h4 class="font-medium mb-2">Operational History</h4>
+                        <textarea data-field="operational_history" class="edit-textarea mb-4" placeholder="Operational history...">${craft.operational_history||''}</textarea>
+                        <h4 class="font-medium mb-2 text-red-800">Accidents &amp; Incidents</h4>
+                        <textarea data-field="known_accidents" class="edit-textarea" placeholder="Known accidents...">${craft.known_accidents||''}</textarea>
+                    </div>
+                    <div class="glass-card p-6">
+                        <h3 class="text-xl font-medium mb-4">Technical Specifications</h3>
+                        ${txtRow('Class Type','craft_type', craft.craft_type)}
+                        ${numRow('Length (m)','length_m', s.length_m)}
+                        ${numRow('Wingspan (m)','wingspan_m', s.wingspan_m)}
+                        ${numRow('Height (m)','height_m', s.height_m)}
+                        ${numRow('Max T/O Weight (kg)','max_takeoff_weight_kg', s.max_takeoff_weight_kg)}
+                        ${numRow('Max Speed (km/h)','max_speed_kmh', s.max_speed_kmh)}
+                        ${numRow('Cruise Speed (km/h)','cruise_speed_kmh', s.cruise_speed_kmh)}
+                        ${numRow('Range (km)','range_km', s.range_km)}
+                        ${numRow('GE Altitude (m)','ground_effect_altitude_m', s.ground_effect_altitude_m)}
+                        ${txtRow('Wing Config','wing_configuration', s.wing_configuration)}
+                        <div class="mt-4">
+                            <label class="text-gray-500 text-sm">Current Location</label>
+                            <input type="text" data-field="current_location" value="${(craft.current_location||'').replace(/"/g,'&quot;')}" class="edit-input edit-input-left text-sm mt-1" placeholder="—">
+                        </div>
+                    </div>
+                </div>`;
         }
 
         function showListView() {
