@@ -107,7 +107,12 @@
                 <h1 class="text-4xl font-semibold tracking-tight text-appleDark mb-2 cursor-pointer" onclick="showListView()">Ground Effect World</h1>
                 <p class="text-gray-500 font-light">The definitive database of ground effect craft.</p>
             </div>
+            <a href="/admin" title="Admin / Crawler Monitor" class="text-gray-400 hover:text-gray-700 transition-colors flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg hover:bg-gray-200">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><circle cx="12" cy="12" r="3" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" /></svg>
+                Admin
+            </a>
         </header>
+
 
         <!-- LIST VIEW -->
         <div id="listView">
@@ -173,6 +178,52 @@
                 </div>
             </div>
             <div id="detailContent"></div>
+        </div>
+    </div>
+
+    <!-- RECONCILIATION MODAL -->
+    <div id="reconModal" class="fixed inset-0 bg-gray-900 bg-opacity-50 z-50 hidden flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full overflow-hidden">
+            <div class="bg-gray-50 border-b border-gray-200 px-6 py-4 flex justify-between items-center">
+                <h3 class="text-lg font-semibold text-gray-800">Data Reconciliation</h3>
+                <span class="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full" id="reconProgress"></span>
+            </div>
+            
+            <div class="p-8">
+                <div class="mb-8 text-center">
+                    <h4 class="text-2xl font-semibold text-gray-800" id="reconLabel">Field Name</h4>
+                    <p class="text-gray-500 mt-2">The crawler found different information than what's in the database. Which would you like to keep?</p>
+                </div>
+                
+                <div class="flex flex-col md:flex-row gap-8 items-stretch">
+                    <!-- Left side (New) -->
+                    <div class="flex-1 border-2 border-blue-200 bg-blue-50 hover:bg-blue-100 rounded-2xl p-6 relative flex flex-col cursor-pointer hover:border-blue-400 transition-all shadow-sm" onclick="resolveConflict(true)">
+                        <div class="text-xs font-bold text-blue-700 uppercase tracking-wider mb-3">New Extracted Data</div>
+                        <div class="text-gray-800 flex-1 flex items-center justify-center text-center whitespace-pre-wrap break-words min-h-[100px]" id="reconNewValue" style="font-size: 1.25rem; line-height: 1.6;"></div>
+                        <div class="mt-6 text-center">
+                            <button class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-xl w-full transition-colors shadow">
+                                Accept New
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Center VS divider -->
+                    <div class="hidden md:flex flex-col justify-center items-center">
+                        <div class="w-10 h-10 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-sm shadow-inner">VS</div>
+                    </div>
+
+                    <!-- Right side (Existing) -->
+                    <div class="flex-1 border-2 border-gray-200 bg-gray-50 hover:bg-gray-100 rounded-2xl p-6 relative flex flex-col cursor-pointer hover:border-gray-400 transition-all shadow-sm" onclick="resolveConflict(false)">
+                        <div class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Existing Database Value</div>
+                        <div class="text-gray-800 flex-1 flex items-center justify-center text-center whitespace-pre-wrap break-words min-h-[100px]" id="reconDbValue" style="font-size: 1.25rem; line-height: 1.6;"></div>
+                        <div class="mt-6 text-center">
+                            <button class="bg-white border border-gray-300 hover:bg-gray-100 text-gray-700 font-medium py-3 px-6 rounded-xl w-full transition-colors shadow-sm">
+                                Keep Existing
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -597,6 +648,7 @@
                 const decoder = new TextDecoder();
                 let buffer = '';
                 let doneData = null;
+                let conflictData = null;
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -616,6 +668,9 @@
                             } else if (evt.type === 'done') {
                                 doneData = evt;
                                 setLine(evt.message, 'text-green-600');
+                            } else if (evt.type === 'conflict_resolution') {
+                                conflictData = evt;
+                                setLine(evt.message, 'text-orange-600');
                             } else {
                                 setLine(evt.message, 'text-blue-600');
                             }
@@ -623,7 +678,11 @@
                     }
                 }
 
-                if (doneData) {
+                if (conflictData) {
+                    setTimeout(() => {
+                        startReconciliation(conflictData);
+                    }, 1000);
+                } else if (doneData) {
                     setTimeout(async () => {
                         await fetchCrafts();
                         showCraftDetails(doneData.craft_id);
@@ -636,11 +695,94 @@
             } catch (err) {
                 setLine('Network error: ' + err.message, 'text-red-600');
             } finally {
+                // Remove the UI reset from finally block if there are conflicts, 
+                // because reconciliation modal handles it after completion
+                if (!document.getElementById('reconModal').classList.contains('hidden') || document.getElementById('crawlStatus').textContent.includes('Reconciliation')) {
+                    // Do not reset buttons if reconciliation started
+                } else {
+                    btn.disabled = false;
+                    btn.classList.remove('opacity-70', 'cursor-not-allowed');
+                    icon.classList.remove('spinner');
+                    updateCrawlBtn();
+                }
+            }
+        }
+
+        // ── Reconciliation Logic ─────────────────────────────────────────────
+        let pendingConflicts = [];
+        let totalConflicts = 0;
+        let resolvedPayload = {};
+        let conflictCraftId = null;
+
+        function startReconciliation(data) {
+            pendingConflicts = data.conflicts;
+            totalConflicts = pendingConflicts.length;
+            conflictCraftId = data.craft_id;
+            resolvedPayload = {};
+            
+            if (totalConflicts > 0) {
+                showNextConflict();
+            }
+        }
+
+        function showNextConflict() {
+            if (pendingConflicts.length === 0) {
+                submitResolvedConflicts();
+                return;
+            }
+            const c = pendingConflicts[0];
+            const currentIdx = totalConflicts - pendingConflicts.length + 1;
+            
+            document.getElementById('reconProgress').textContent = `Conflict ${currentIdx} of ${totalConflicts}`;
+            document.getElementById('reconLabel').textContent = c.label;
+            document.getElementById('reconNewValue').textContent = c.crawler_value !== null ? String(c.crawler_value) : "—";
+            document.getElementById('reconDbValue').textContent = c.db_value !== null ? String(c.db_value) : "—";
+            
+            document.getElementById('reconModal').classList.remove('hidden');
+        }
+
+        function resolveConflict(acceptNew) {
+            const c = pendingConflicts.shift();
+            if (acceptNew) {
+                resolvedPayload[c.field] = c.crawler_value;
+            }
+            showNextConflict();
+        }
+
+        async function submitResolvedConflicts() {
+            document.getElementById('reconModal').classList.add('hidden');
+            const statusEl = document.getElementById('crawlStatus');
+            statusEl.textContent = 'Saving accepted values...';
+            statusEl.className = 'mt-3 text-sm text-blue-600';
+            
+            if (Object.keys(resolvedPayload).length > 0) {
+                try {
+                    await fetch('/api/crafts/' + conflictCraftId, {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(resolvedPayload)
+                    });
+                } catch (err) {
+                    console.error("Failed to save reconciled data:", err);
+                }
+            }
+            
+            statusEl.textContent = 'Data successfully merged!';
+            statusEl.className = 'mt-3 text-sm text-green-600';
+            
+            setTimeout(async () => {
+                await fetchCrafts();
+                showCraftDetails(conflictCraftId);
+                document.getElementById('crawlUrlInput').value = '';
+                document.getElementById('craftNameInput').value = '';
+                
+                const btn = document.getElementById('crawlBtn');
+                const icon = document.getElementById('crawlIcon');
                 btn.disabled = false;
                 btn.classList.remove('opacity-70', 'cursor-not-allowed');
                 icon.classList.remove('spinner');
                 updateCrawlBtn();
-            }
+            }, 1000);
         }
 
         // Allow Enter key in URL field to trigger crawl

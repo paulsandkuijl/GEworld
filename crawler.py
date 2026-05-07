@@ -1,6 +1,8 @@
 import os
 import datetime
 import requests
+import json
+import time
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -10,6 +12,31 @@ from googlesearch import search as google_search
 # Import our DB models
 from app.database import get_session, engine
 from app.models import Craft, Specification, Engine, Source, Media, Milestone, Base
+
+# --------------------------------------------------------------------------------
+# CRAWLER STATE TRACKING
+# --------------------------------------------------------------------------------
+STATE_FILE = "crawler_state.json"
+
+def update_crawler_state(craft_name="None", status="Idle", progress=0):
+    try:
+        session = get_session()
+        queue_count = session.query(Craft).filter(Craft.status == 'In Database Queue').count()
+        processed_count = session.query(Craft).filter(Craft.status == 'Processed').count()
+        session.close()
+
+        state = {
+            "current_craft": craft_name,
+            "status": status,
+            "progress": progress,
+            "queue_remaining": queue_count,
+            "total_processed": processed_count,
+            "last_updated": datetime.datetime.now().isoformat()
+        }
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"[-] Failed to update state file: {e}")
 
 # --------------------------------------------------------------------------------
 # PYDANTIC SCHEMAS FOR LLM EXPECTED OUTPUT
@@ -148,7 +175,7 @@ def scrape_url_text(url: str) -> str:
         text = re.sub(r'\s{2,}', ' ', text)
         
         print(f"[*] Scraped {len(text)} characters of clean text.")
-        return text[:20000]  # Increased limit for data-rich pages
+        return text[:7500]  # llama3.2 has ~8192 token context; 7500 chars leaves headroom for the prompt
     except Exception as e:
         print(f"[-] Failed to scrape {url}: {e}")
         return ""
@@ -209,22 +236,35 @@ def extract_craft_data(text: str, client: OpenAI, craft_name: str) -> Optional[C
     TEXT:
     {text}
     """
-    try:
-        completion = client.chat.completions.create(
+    import concurrent.futures
+
+    def _call_ollama():
+        return client.chat.completions.create(
             model="llama3.2",
             messages=[
                 {"role": "system", "content": "You are a perfect JSON generator. Never output schemas, only output concrete data formatted perfectly to the JSON template. Do not include any text outside the JSON."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
-            temperature=0.1
+            temperature=0.1,
+            timeout=90  # HTTP-level socket timeout
         )
+
+    try:
+        # Thread-based hard deadline: if Ollama doesn't respond in 90s, cancel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_call_ollama)
+            try:
+                completion = future.result(timeout=90)
+            except concurrent.futures.TimeoutError:
+                print(f"[-] AI Extraction timed out after 90s for '{craft_name}' — skipping.")
+                return None
         return CraftExtraction.model_validate_json(completion.choices[0].message.content)
     except Exception as e:
         print(f"[-] AI Extraction failed: {e}")
         return None
 
-def ingest_to_db(extraction: CraftExtraction, url: str, existing_craft: Craft):
+def ingest_to_db(extraction: CraftExtraction, url: str, existing_craft: Craft, reconcile: bool = False) -> list:
     session = get_session()
     # We must merge it into the current session to update it
     craft = session.merge(existing_craft)
@@ -233,40 +273,69 @@ def ingest_to_db(extraction: CraftExtraction, url: str, existing_craft: Craft):
     craft_name = extraction.name or existing_craft.name
     print(f"[+] UPDATING: Populating seeded craft '{craft_name}' with new AI extraction...")
     
+    conflicts = []
+
+    def check_field(obj, field_name, new_val, label):
+        old_val = getattr(obj, field_name, None)
+        # Skip if crawler found nothing new
+        if new_val is None or str(new_val).strip() == "":
+            return
+        
+        # If DB is empty or values match, automatically update
+        if old_val is None or str(old_val).strip() == "" or old_val == new_val:
+            setattr(obj, field_name, new_val)
+        else:
+            # If there's a difference and reconcile is requested, flag it
+            if reconcile:
+                conflicts.append({
+                    "field": field_name,
+                    "label": label,
+                    "db_value": old_val,
+                    "crawler_value": new_val
+                })
+            else:
+                setattr(obj, field_name, new_val)
+
     # Update base fields
-    craft.alternative_names = extraction.alternative_names
-    craft.designer = extraction.designer
-    craft.manufacturer = extraction.manufacturer
-    craft.country_of_origin = extraction.country_of_origin
-    craft.year_introduced = extraction.year_introduced
-    craft.operational_era = extraction.operational_era
-    craft.status = extraction.status
-    craft.craft_type = extraction.craft_type
-    craft.description_history = extraction.description_history
-    craft.operational_history = extraction.operational_history
-    craft.known_accidents = extraction.known_accidents
-    craft.current_location = extraction.current_location
-    craft.data_confidence_score = extraction.data_confidence_score
+    check_field(craft, "alternative_names", extraction.alternative_names, "Alternative Names")
+    check_field(craft, "designer", extraction.designer, "Designer")
+    check_field(craft, "manufacturer", extraction.manufacturer, "Manufacturer")
+    check_field(craft, "country_of_origin", extraction.country_of_origin, "Country of Origin")
+    check_field(craft, "year_introduced", extraction.year_introduced, "Year Introduced")
+    check_field(craft, "operational_era", extraction.operational_era, "Operational Era")
+    check_field(craft, "status", extraction.status, "Status")
+    check_field(craft, "craft_type", extraction.craft_type, "Craft Type")
+    check_field(craft, "description_history", extraction.description_history, "Description/History")
+    check_field(craft, "operational_history", extraction.operational_history, "Operational History")
+    check_field(craft, "known_accidents", extraction.known_accidents, "Known Accidents")
+    check_field(craft, "current_location", extraction.current_location, "Current Location")
+    
+    # Update confidence score
+    if extraction.data_confidence_score:
+        craft.data_confidence_score = extraction.data_confidence_score
     
     if extraction.specifications:
-        craft.specifications = Specification(
-            length_m=extraction.specifications.length_m,
-            beam_m=extraction.specifications.beam_m,
-            wingspan_m=extraction.specifications.wingspan_m,
-            height_m=extraction.specifications.height_m,
-            empty_weight_kg=extraction.specifications.empty_weight_kg,
-            max_takeoff_weight_kg=extraction.specifications.max_takeoff_weight_kg,
-            payload_capacity_kg=extraction.specifications.payload_capacity_kg,
-            max_speed_kmh=extraction.specifications.max_speed_kmh,
-            cruise_speed_kmh=extraction.specifications.cruise_speed_kmh,
-            range_km=extraction.specifications.range_km,
-            ground_effect_altitude_m=extraction.specifications.ground_effect_altitude_m,
-            service_ceiling_m=extraction.specifications.service_ceiling_m,
-            wing_configuration=extraction.specifications.wing_configuration,
-            hull_material=extraction.specifications.hull_material,
-            crew_capacity=extraction.specifications.crew_capacity,
-            passenger_capacity=extraction.specifications.passenger_capacity
-        )
+        if not craft.specifications:
+            craft.specifications = Specification()
+            
+        spec = craft.specifications
+        ext_spec = extraction.specifications
+        check_field(spec, "length_m", ext_spec.length_m, "Length (m)")
+        check_field(spec, "beam_m", ext_spec.beam_m, "Beam (m)")
+        check_field(spec, "wingspan_m", ext_spec.wingspan_m, "Wingspan (m)")
+        check_field(spec, "height_m", ext_spec.height_m, "Height (m)")
+        check_field(spec, "empty_weight_kg", ext_spec.empty_weight_kg, "Empty Weight (kg)")
+        check_field(spec, "max_takeoff_weight_kg", ext_spec.max_takeoff_weight_kg, "Max Takeoff Weight (kg)")
+        check_field(spec, "payload_capacity_kg", ext_spec.payload_capacity_kg, "Payload Capacity (kg)")
+        check_field(spec, "max_speed_kmh", ext_spec.max_speed_kmh, "Max Speed (km/h)")
+        check_field(spec, "cruise_speed_kmh", ext_spec.cruise_speed_kmh, "Cruise Speed (km/h)")
+        check_field(spec, "range_km", ext_spec.range_km, "Range (km)")
+        check_field(spec, "ground_effect_altitude_m", ext_spec.ground_effect_altitude_m, "Ground Effect Altitude (m)")
+        check_field(spec, "service_ceiling_m", ext_spec.service_ceiling_m, "Service Ceiling (m)")
+        check_field(spec, "wing_configuration", ext_spec.wing_configuration, "Wing Configuration")
+        check_field(spec, "hull_material", ext_spec.hull_material, "Hull Material")
+        check_field(spec, "crew_capacity", ext_spec.crew_capacity, "Crew Capacity")
+        check_field(spec, "passenger_capacity", ext_spec.passenger_capacity, "Passenger Capacity")
         
     for e in extraction.engines:
         craft.engines.append(Engine(
@@ -290,40 +359,95 @@ def ingest_to_db(extraction: CraftExtraction, url: str, existing_craft: Craft):
     session.commit()
     print(f"[+] Successfully saved '{craft.name}' fully mapped to expanded schema!")
     session.close()
+    return conflicts
 
 def main():
     print("\n============= GROUND EFFECT CRAFT AI CRAWLER =============")
-    client = OpenAI(base_url='http://localhost:11434/v1', api_key='ollama')
-    
-    session = get_session()
-    # Find the next 5 crafts that are still in the queue (no specs populated)
-    pending_crafts = session.query(Craft).filter(Craft.status == 'In Database Queue').limit(5).all()
-    session.close()
-    
-    if not pending_crafts:
-        print("No pending crafts in queue. Run seed script first.")
-        return
+    # max_retries=0 prevents the client from silently re-issuing hung requests
+    client = OpenAI(base_url='http://localhost:11434/v1', api_key='ollama', max_retries=0)
+
+    # On startup, reset any craft that was abandoned mid-extraction so it gets
+    # re-queued rather than skipped permanently.
+    print("[*] Checking for abandoned in-progress extractions...")
+    try:
+        session = get_session()
+        import datetime as _dt
+        # Any craft still 'In Database Queue' with a recent state file entry
+        # may be the one that was hanging. Re-queue it by leaving status as-is;
+        # the loop below will simply pick it up again and retry.
+        stuck_count = session.query(Craft).filter(Craft.status == 'In Database Queue').count()
+        session.close()
+        print(f"[*] {stuck_count} craft(s) remain in the queue — resuming.")
+    except Exception as e:
+        print(f"[-] Startup check failed: {e}")
+
+    while True:
+        update_crawler_state(status="Checking queue...", progress=0)
+        session = get_session()
+        target_craft = session.query(Craft).filter(Craft.status == 'In Database Queue').first()
+        session.close()
         
-    for target_craft in pending_crafts:
+        if not target_craft:
+            print("No pending crafts in queue. Sleeping for 60 seconds...")
+            update_crawler_state(status="Idle (Queue Empty)", progress=100)
+            time.sleep(60)
+            continue
+            
         # Strictly use base name to rely natively on Wiki's title match algorithm
         base_name = target_craft.name.split(" (")[0]
         query = base_name
         print(f"\n>>>> PROCESSING PENDING TARGET: {query}")
+        update_crawler_state(craft_name=query, status="Searching Wikipedia...", progress=10)
+        
         results = perform_search(query, max_results=1)
         if not results:
+            print("[-] No search results found.")
+            session = get_session()
+            craft = session.query(Craft).get(target_craft.id)
+            if craft:
+                craft.status = 'No Results Found'
+                session.commit()
+            session.close()
+            update_crawler_state(craft_name=query, status="No Results Found", progress=0)
             continue
             
         url = results[0].get('href')
+        update_crawler_state(craft_name=query, status=f"Scraping {url}...", progress=30)
         text = scrape_url_text(url)
         if len(text) < 200:
             print("[-] Scraped text was too short...")
+            session = get_session()
+            craft = session.query(Craft).get(target_craft.id)
+            if craft:
+                craft.status = 'Insufficient Text'
+                session.commit()
+            session.close()
+            update_crawler_state(craft_name=query, status="Insufficient Text Content", progress=0)
             continue
             
+        update_crawler_state(craft_name=query, status="Extracting via AI (Ollama)...", progress=60)
         extraction = extract_craft_data(text, client, target_craft.name)
         if extraction:
+            update_crawler_state(craft_name=query, status="Saving to Database...", progress=90)
             ingest_to_db(extraction, url, existing_craft=target_craft)
-        
-    print("\n============= CRAWL COMPLETE =============")
+            
+            # Ensure it is removed from the queue
+            session = get_session()
+            craft = session.query(Craft).get(target_craft.id)
+            if craft and craft.status == 'In Database Queue':
+                craft.status = 'Processed'
+                session.commit()
+            session.close()
+            update_crawler_state(craft_name=query, status="Completed", progress=100)
+        else:
+            print("[-] AI Extraction Failed.")
+            session = get_session()
+            craft = session.query(Craft).get(target_craft.id)
+            if craft:
+                craft.status = 'AI Extraction Failed'
+                session.commit()
+            session.close()
+            update_crawler_state(craft_name=query, status="AI Extraction Failed", progress=0)
 
 if __name__ == "__main__":
     main()

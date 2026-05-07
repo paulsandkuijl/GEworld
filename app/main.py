@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from pydantic import BaseModel as PyBaseModel
 import json
+import os
+import datetime
 
-from app.database import get_session, init_db
+from app.database import get_db, get_session, init_db
 from app.models import Craft, Specification, Engine, Source
 
 app = FastAPI(title="Ground Effect World API")
@@ -35,8 +37,8 @@ def read_root(request: Request):
 @app.get("/api/crafts")
 def list_crafts(
     skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_session),
+    limit: int = 500,
+    db: Session = Depends(get_db),
     search: Optional[str] = None
 ):
     query = db.query(Craft)
@@ -56,7 +58,7 @@ def list_crafts(
     ]
 
 @app.get("/api/crafts/{craft_id}")
-def get_craft(craft_id: int, db: Session = Depends(get_session)):
+def get_craft(craft_id: int, db: Session = Depends(get_db)):
     craft = db.query(Craft).filter(Craft.id == craft_id).first()
     if not craft:
         raise HTTPException(status_code=404, detail="Craft not found")
@@ -135,7 +137,7 @@ class CraftUpdateModel(PyBaseModel):
     wing_configuration: Optional[str] = None
 
 @app.patch("/api/crafts/{craft_id}")
-def update_craft(craft_id: int, payload: CraftUpdateModel, db: Session = Depends(get_session)):
+def update_craft(craft_id: int, payload: CraftUpdateModel, db: Session = Depends(get_db)):
     craft = db.query(Craft).filter(Craft.id == craft_id).first()
     if not craft:
         raise HTTPException(status_code=404, detail="Craft not found")
@@ -261,7 +263,7 @@ async def crawl_url(payload: CrawlRequest):
 
             if existing:
                 yield sse("Updating existing entry: \"" + existing.name + "\"")
-                ingest_to_db(extraction, final_url, existing_craft=existing)
+                conflicts = ingest_to_db(extraction, final_url, existing_craft=existing, reconcile=True)
                 saved_id = existing.id
             else:
                 yield sse("Creating new entry: \"" + extracted_name + "\"")
@@ -269,17 +271,26 @@ async def crawl_url(payload: CrawlRequest):
                 db.add(new_craft)
                 db.commit()
                 db.refresh(new_craft)
-                ingest_to_db(extraction, final_url, existing_craft=new_craft)
+                conflicts = ingest_to_db(extraction, final_url, existing_craft=new_craft, reconcile=False)
                 saved_id = new_craft.id
 
-            yield sse(
-                "Saved: \"" + extracted_name + "\"",
-                etype="done",
-                craft_id=saved_id,
-                craft_name=extracted_name,
-                source_url=final_url,
-                auto_searched=search_mode
-            )
+            if conflicts:
+                yield sse(
+                    "Reconciliation required for " + str(len(conflicts)) + " fields.",
+                    etype="conflict_resolution",
+                    craft_id=saved_id,
+                    craft_name=extracted_name,
+                    conflicts=conflicts
+                )
+            else:
+                yield sse(
+                    "Saved: \"" + extracted_name + "\"",
+                    etype="done",
+                    craft_id=saved_id,
+                    craft_name=extracted_name,
+                    source_url=final_url,
+                    auto_searched=search_mode
+                )
 
         except Exception as e:
             yield sse("Unexpected error: " + str(e), etype="error")
@@ -291,3 +302,37 @@ async def crawl_url(payload: CrawlRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
     )
+
+
+# ── Admin / Crawler Status ────────────────────────────────────────────────────
+
+STATE_FILE = "crawler_state.json"
+
+@app.get("/api/crawler/status")
+def get_crawler_status():
+    """Read the crawler state file written by the background crawler process."""
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+            # Flag as stale if not updated in the last 5 minutes
+            last_updated = state.get("last_updated")
+            if last_updated:
+                age = (datetime.datetime.now() - datetime.datetime.fromisoformat(last_updated)).total_seconds()
+                state["is_stale"] = age > 180  # 120s Ollama timeout + 60s buffer
+            return state
+    except Exception:
+        pass
+    return {
+        "current_craft": None,
+        "status": "Offline",
+        "progress": 0,
+        "queue_remaining": 0,
+        "total_processed": 0,
+        "last_updated": None,
+        "is_stale": True
+    }
+
+@app.get("/admin")
+def admin_page(request: Request):
+    return templates.TemplateResponse(request=request, name="admin.html")

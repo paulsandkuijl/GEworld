@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin — Ground Effect World</title>
+    <meta name="description" content="Real-time monitoring dashboard for the Ground Effect World AI crawler.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0a0c10;
+            --surface: #111318;
+            --surface2: #1a1d25;
+            --border: rgba(255,255,255,0.07);
+            --border-glow: rgba(99,179,237,0.25);
+            --text: #e2e8f0;
+            --text-muted: #64748b;
+            --text-dim: #94a3b8;
+            --accent: #63b3ed;
+            --accent-2: #7c3aed;
+            --success: #34d399;
+            --warning: #fbbf24;
+            --error: #f87171;
+            --idle: #64748b;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Inter', sans-serif;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* ── Background grid ── */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(99,179,237,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(99,179,237,0.03) 1px, transparent 1px);
+            background-size: 48px 48px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .wrapper {
+            position: relative;
+            z-index: 1;
+            max-width: 1080px;
+            margin: 0 auto;
+            padding: 2.5rem 1.5rem 4rem;
+        }
+
+        /* ── Header ── */
+        header {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            margin-bottom: 2.5rem;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .header-left h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            background: linear-gradient(135deg, #e2e8f0 30%, #63b3ed);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header-left p {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-top: 4px;
+        }
+
+        .header-right a {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.8rem;
+            font-weight: 500;
+            padding: 6px 14px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            transition: color 0.2s, border-color 0.2s;
+        }
+        .header-right a:hover {
+            color: var(--accent);
+            border-color: var(--border-glow);
+        }
+
+        /* ── Cards ── */
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(99,179,237,0.2), transparent);
+        }
+
+        .card-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 0.75rem;
+        }
+
+        /* ── Stats Row ── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 1.25rem 1.5rem;
+            position: relative;
+            overflow: hidden;
+            transition: border-color 0.3s;
+        }
+        .stat-card:hover { border-color: var(--border-glow); }
+
+        .stat-label {
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+        .stat-value {
+            font-size: 2.25rem;
+            font-weight: 700;
+            letter-spacing: -0.04em;
+            font-variant-numeric: tabular-nums;
+            line-height: 1;
+        }
+        .stat-value.accent  { color: var(--accent); }
+        .stat-value.success { color: var(--success); }
+        .stat-value.warning { color: var(--warning); }
+        .stat-value.dim     { color: var(--text-dim); }
+
+        /* ── Status Pill ── */
+        #statusPill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            padding: 4px 12px;
+            border-radius: 999px;
+            border: 1px solid;
+            transition: all 0.4s ease;
+        }
+        .pill-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        /* pill states */
+        .pill-active   { background: rgba(52,211,153,0.1);  border-color: rgba(52,211,153,0.35);  color: var(--success); }
+        .pill-active .pill-dot { background: var(--success); box-shadow: 0 0 6px var(--success); animation: pulse 1.5s infinite; }
+
+        .pill-idle     { background: rgba(100,116,139,0.1); border-color: rgba(100,116,139,0.3);  color: var(--idle); }
+        .pill-idle .pill-dot { background: var(--idle); }
+
+        .pill-error    { background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.3);  color: var(--error); }
+        .pill-error .pill-dot { background: var(--error); box-shadow: 0 0 6px var(--error); }
+
+        .pill-stale    { background: rgba(251,191,36,0.1);  border-color: rgba(251,191,36,0.3);   color: var(--warning); }
+        .pill-stale .pill-dot { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        /* ── Main panel ── */
+        .main-panel {
+            display: grid;
+            gap: 1.25rem;
+            margin-bottom: 1.25rem;
+        }
+
+        /* ── Craft banner ── */
+        #craftBanner {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+
+        .craft-name-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+        }
+
+        #currentCraftName {
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            color: var(--text);
+            transition: all 0.4s ease;
+            font-family: 'Inter', sans-serif;
+        }
+
+        #statusPillWrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+        }
+
+        #statusText {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+            transition: all 0.4s ease;
+        }
+
+        /* ── Progress Bar ── */
+        .progress-container {
+            margin-top: 1.25rem;
+        }
+        .progress-track {
+            width: 100%;
+            height: 8px;
+            background: var(--surface2);
+            border-radius: 999px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        #progressFill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #3b82f6, #63b3ed, #7c3aed);
+            background-size: 200% 100%;
+            border-radius: 999px;
+            transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+            position: relative;
+        }
+        #progressFill.animating {
+            animation: shimmer 2s linear infinite;
+        }
+        @keyframes shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        #progressFill::after {
+            content: '';
+            position: absolute;
+            top: 0; right: 0;
+            width: 40px;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3));
+            border-radius: 0 999px 999px 0;
+        }
+        .progress-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 8px;
+        }
+        #progressPct {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--accent);
+            font-variant-numeric: tabular-nums;
+        }
+        #lastUpdated {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* ── Step pipeline ── */
+        .pipeline {
+            display: flex;
+            gap: 0;
+            margin-top: 1.5rem;
+            position: relative;
+        }
+        .pipeline::before {
+            content: '';
+            position: absolute;
+            top: 14px;
+            left: 7%;
+            right: 7%;
+            height: 2px;
+            background: var(--border);
+            z-index: 0;
+        }
+        .step {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            position: relative;
+            z-index: 1;
+        }
+        .step-dot {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--surface2);
+            border: 2px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-muted);
+            transition: all 0.4s ease;
+            position: relative;
+        }
+        .step-dot.done {
+            background: rgba(52,211,153,0.15);
+            border-color: var(--success);
+            color: var(--success);
+        }
+        .step-dot.active {
+            background: rgba(99,179,237,0.15);
+            border-color: var(--accent);
+            color: var(--accent);
+            box-shadow: 0 0 12px rgba(99,179,237,0.3);
+            animation: stepPulse 1.5s infinite;
+        }
+        @keyframes stepPulse {
+            0%, 100% { box-shadow: 0 0 8px rgba(99,179,237,0.3); }
+            50%       { box-shadow: 0 0 20px rgba(99,179,237,0.6); }
+        }
+        .step-label {
+            font-size: 0.65rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            text-align: center;
+            letter-spacing: 0.03em;
+            line-height: 1.3;
+            transition: color 0.3s;
+            white-space: nowrap;
+        }
+        .step.active .step-label { color: var(--accent); }
+        .step.done .step-label { color: var(--success); }
+
+        /* ── Log Feed ── */
+        #logFeed {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            max-height: 220px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+        #logFeed::-webkit-scrollbar { width: 4px; }
+        #logFeed::-webkit-scrollbar-track { background: transparent; }
+        #logFeed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        .log-entry {
+            display: flex;
+            gap: 10px;
+            padding: 5px 8px;
+            border-radius: 6px;
+            line-height: 1.5;
+            animation: fadeSlideIn 0.3s ease;
+            border: 1px solid transparent;
+        }
+        .log-entry.new {
+            background: rgba(99,179,237,0.05);
+            border-color: rgba(99,179,237,0.1);
+        }
+        @keyframes fadeSlideIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .log-ts { color: var(--text-muted); flex-shrink: 0; }
+        .log-msg { color: var(--text-dim); word-break: break-word; }
+        .log-msg.highlight { color: var(--accent); }
+        .log-msg.success   { color: var(--success); }
+        .log-msg.error     { color: var(--error); }
+        .log-msg.warn      { color: var(--warning); }
+
+        /* ── Utilities ── */
+        .flex-between {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .section-gap { margin-bottom: 1.25rem; }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            .stats-row { grid-template-columns: 1fr 1fr; }
+            .pipeline .step-label { font-size: 0.6rem; white-space: normal; }
+            #currentCraftName { font-size: 1.2rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <header>
+        <div class="header-left">
+            <h1>⚙ Admin Dashboard</h1>
+            <p>Ground Effect World — AI Crawler Monitor</p>
+        </div>
+        <div class="header-right">
+            <a href="/" id="homeLink">
+                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+                Back to Database
+            </a>
+        </div>
+    </header>
+
+    <!-- Stats Row -->
+    <div class="stats-row section-gap">
+        <div class="stat-card">
+            <div class="stat-label">Queue Remaining</div>
+            <div class="stat-value warning" id="statQueue">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Total Processed</div>
+            <div class="stat-value success" id="statProcessed">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Progress</div>
+            <div class="stat-value accent" id="statProgress">—%</div>
+        </div>
+        <div class="stat-card" style="display:flex; align-items:center; justify-content:center;">
+            <div>
+                <div class="stat-label" style="text-align:center; margin-bottom:8px;">Crawler State</div>
+                <div id="statusPill" class="pill-idle">
+                    <span class="pill-dot"></span>
+                    <span id="pillText">Checking...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Processing Card -->
+    <div class="card section-gap">
+        <div class="flex-between" id="craftBanner">
+            <div>
+                <div class="craft-name-label">Currently Processing</div>
+                <div id="currentCraftName">—</div>
+            </div>
+            <div id="statusPillWrapper">
+                <div id="statusText">Initializing...</div>
+            </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="progress-container">
+            <div class="progress-track">
+                <div id="progressFill"></div>
+            </div>
+            <div class="progress-labels">
+                <span id="progressPct">0%</span>
+                <span id="lastUpdated">—</span>
+            </div>
+        </div>
+
+        <!-- Step Pipeline -->
+        <div class="pipeline" id="pipeline">
+            <div class="step" id="step-0">
+                <div class="step-dot" id="sdot-0">1</div>
+                <div class="step-label">Queue<br>Check</div>
+            </div>
+            <div class="step" id="step-1">
+                <div class="step-dot" id="sdot-1">2</div>
+                <div class="step-label">Wikipedia<br>Search</div>
+            </div>
+            <div class="step" id="step-2">
+                <div class="step-dot" id="sdot-2">3</div>
+                <div class="step-label">Scraping<br>Content</div>
+            </div>
+            <div class="step" id="step-3">
+                <div class="step-dot" id="sdot-3">4</div>
+                <div class="step-label">AI<br>Extraction</div>
+            </div>
+            <div class="step" id="step-4">
+                <div class="step-dot" id="sdot-4">5</div>
+                <div class="step-label">Saving to<br>Database</div>
+            </div>
+            <div class="step" id="step-5">
+                <div class="step-dot" id="sdot-5">✓</div>
+                <div class="step-label">Complete</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="card">
+        <div class="flex-between" style="margin-bottom: 0.75rem;">
+            <div class="card-label">Activity Log</div>
+            <button onclick="clearLog()" style="font-size:0.7rem; color:var(--text-muted); background:none; border:none; cursor:pointer; padding:2px 6px; border-radius:4px; transition:color 0.2s" onmouseover="this.style.color='var(--text)'" onmouseout="this.style.color='var(--text-muted)'">Clear</button>
+        </div>
+        <div id="logFeed">
+            <div class="log-entry">
+                <span class="log-ts">--:--:--</span>
+                <span class="log-msg">Waiting for data from crawler...</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const POLL_INTERVAL_MS = 1500;
+    let lastState = null;
+    let logHistory = [];
+
+    // Map progress % to a step index (0–5)
+    function progressToStep(pct) {
+        if (pct <= 0)   return -1;
+        if (pct <= 10)  return 0;
+        if (pct <= 30)  return 1;
+        if (pct <= 60)  return 2;
+        if (pct <= 90)  return 3;
+        if (pct < 100)  return 4;
+        return 5;
+    }
+
+    function updatePipeline(progress) {
+        const activeStep = progressToStep(progress);
+        for (let i = 0; i <= 5; i++) {
+            const stepEl  = document.getElementById(`step-${i}`);
+            const dotEl   = document.getElementById(`sdot-${i}`);
+            stepEl.classList.remove('active', 'done');
+            dotEl.classList.remove('active', 'done');
+            if (i < activeStep) {
+                stepEl.classList.add('done');
+                dotEl.classList.add('done');
+            } else if (i === activeStep) {
+                stepEl.classList.add('active');
+                dotEl.classList.add('active');
+            }
+        }
+    }
+
+    function setPill(state, isStale) {
+        const pill = document.getElementById('statusPill');
+        const pillText = document.getElementById('pillText');
+        const statusLower = (state.status || '').toLowerCase();
+
+        pill.className = '';
+        if (isStale || statusLower === 'offline') {
+            pill.classList.add('pill-stale');
+            pillText.textContent = isStale ? 'Stale / Offline' : 'Offline';
+        } else if (statusLower.includes('idle') || statusLower.includes('queue empty') || statusLower.includes('sleeping')) {
+            pill.classList.add('pill-idle');
+            pillText.textContent = 'Idle';
+        } else if (statusLower.includes('fail') || statusLower.includes('error')) {
+            pill.classList.add('pill-error');
+            pillText.textContent = 'Error';
+        } else {
+            pill.classList.add('pill-active');
+            pillText.textContent = 'Active';
+        }
+    }
+
+    function fmtTime(isoStr) {
+        if (!isoStr) return '—';
+        try {
+            const d = new Date(isoStr);
+            return d.toLocaleTimeString('en-US', { hour12: false });
+        } catch { return '—'; }
+    }
+
+    function msgClass(status) {
+        const s = (status || '').toLowerCase();
+        if (s.includes('complet') || s.includes('saved') || s.includes('success')) return 'success';
+        if (s.includes('fail') || s.includes('error')) return 'error';
+        if (s.includes('idle') || s.includes('sleep') || s.includes('queue empty')) return 'warn';
+        return 'highlight';
+    }
+
+    function addLog(time, message, cls = '') {
+        const feed = document.getElementById('logFeed');
+        // De-dupe consecutive identical messages
+        if (logHistory.length > 0 && logHistory[logHistory.length - 1] === message) return;
+        logHistory.push(message);
+        if (logHistory.length > 200) logHistory.shift();
+
+        const entry = document.createElement('div');
+        entry.className = 'log-entry new';
+        entry.innerHTML = `<span class="log-ts">${time}</span><span class="log-msg ${cls}">${escHtml(message)}</span>`;
+        feed.prepend(entry);
+
+        // Remove "new" highlight after animation
+        setTimeout(() => entry.classList.remove('new'), 800);
+
+        // Cap log to 80 entries in the DOM
+        while (feed.children.length > 80) feed.removeChild(feed.lastChild);
+    }
+
+    function clearLog() {
+        document.getElementById('logFeed').innerHTML = '';
+        logHistory = [];
+    }
+
+    function escHtml(str) {
+        return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    async function poll() {
+        try {
+            const res = await fetch('/api/crawler/status');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const state = await res.json();
+
+            const progress = state.progress || 0;
+            const isStale  = !!state.is_stale;
+
+            // Craft name
+            const nameEl = document.getElementById('currentCraftName');
+            const newName = state.current_craft || '—';
+            if (nameEl.textContent !== newName) {
+                nameEl.style.opacity = '0';
+                setTimeout(() => {
+                    nameEl.textContent = newName;
+                    nameEl.style.opacity = '1';
+                    nameEl.style.transition = 'opacity 0.4s ease';
+                }, 200);
+            }
+
+            // Status text
+            const statusEl = document.getElementById('statusText');
+            const newStatus = state.status || 'Unknown';
+            if (statusEl.textContent !== newStatus) {
+                statusEl.style.opacity = '0';
+                setTimeout(() => {
+                    statusEl.textContent = newStatus;
+                    statusEl.style.opacity = '1';
+                    statusEl.style.transition = 'opacity 0.4s ease';
+                }, 200);
+            }
+
+            // Progress bar
+            const fill = document.getElementById('progressFill');
+            fill.style.width = progress + '%';
+            const isMoving = progress > 0 && progress < 100 && !isStale;
+            fill.classList.toggle('animating', isMoving);
+
+            // Stats
+            document.getElementById('statQueue').textContent = state.queue_remaining ?? '—';
+            document.getElementById('statProcessed').textContent = state.total_processed ?? '—';
+            document.getElementById('statProgress').textContent = progress + '%';
+            document.getElementById('progressPct').textContent = progress + '%';
+            document.getElementById('lastUpdated').textContent =
+                state.last_updated ? 'Updated ' + fmtTime(state.last_updated) : '—';
+
+            // Pipeline steps
+            updatePipeline(isStale ? 0 : progress);
+
+            // Status pill
+            setPill(state, isStale);
+
+            // Log new state changes
+            const sig = `${state.current_craft}|${state.status}|${progress}`;
+            if (!lastState || lastState !== sig) {
+                const cls = msgClass(state.status);
+                const craftPart = state.current_craft ? ` [${state.current_craft}]` : '';
+                addLog(fmtTime(state.last_updated || new Date().toISOString()), `${newStatus}${craftPart}`, cls);
+                lastState = sig;
+            }
+
+        } catch (e) {
+            setPill({ status: 'Offline' }, true);
+            addLog(new Date().toLocaleTimeString('en-US', {hour12:false}), 'Could not reach server — retrying...', 'error');
+        }
+        setTimeout(poll, POLL_INTERVAL_MS);
+    }
+
+    // Kick off polling
+    poll();
+</script>
+</body>
+</html>
