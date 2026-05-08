@@ -18,7 +18,7 @@ from app.models import Craft, Specification, Engine, Source, Media, Milestone, B
 # --------------------------------------------------------------------------------
 STATE_FILE = "crawler_state.json"
 
-def update_crawler_state(craft_name="None", status="Idle", progress=0):
+def update_crawler_state(craft_name="None", status="Idle", progress=0, ai_part=0, ai_total=0, ai_time=0):
     try:
         session = get_session()
         queue_count = session.query(Craft).filter(Craft.status == 'In Database Queue').count()
@@ -31,6 +31,10 @@ def update_crawler_state(craft_name="None", status="Idle", progress=0):
             "progress": progress,
             "queue_remaining": queue_count,
             "total_processed": processed_count,
+            "ai_model": "llama3.2",
+            "ai_part": ai_part,
+            "ai_total": ai_total,
+            "ai_last_time_s": ai_time,
             "last_updated": datetime.datetime.now().isoformat()
         }
         with open(STATE_FILE, "w") as f:
@@ -175,19 +179,62 @@ def scrape_url_text(url: str) -> str:
         text = re.sub(r'\s{2,}', ' ', text)
         
         print(f"[*] Scraped {len(text)} characters of clean text.")
-        return text[:7500]  # llama3.2 has ~8192 token context; 7500 chars leaves headroom for the prompt
+        return text[:15000]  # Allow more text since we will chunk it now
     except Exception as e:
         print(f"[-] Failed to scrape {url}: {e}")
         return ""
 
-def extract_craft_data(text: str, client: OpenAI, craft_name: str) -> Optional[CraftExtraction]:
-    print(f"[*] Sending text for '{craft_name}' to local Ollama inference engine for extraction...")
+def extract_facts_from_chunk(text: str, client: OpenAI, craft_name: str, part_num: int, total_parts: int) -> list:
+    """Map step: Extract raw facts from a single chunk of text."""
     prompt = f"""
-    You are a technical data extractor processing the Wing-in-Ground (WIG) craft named "{craft_name}".
-    ASSUME it is a valid winged GEC. 
-    Extract the specifications, operational history, engines, milestones, and media from the TEXT below.
-    You MUST output valid, parsable JSON matching this EXACT template. Replace nulls with data if found. Do NOT use $ref or schema definitions.
+    Extract technical facts about the Wing-in-Ground (WIG) craft "{craft_name}" from the TEXT below.
+    Focus on:
+    - Specifications (weight, dimensions, speed, range)
+    - Engines (names, types, numbers)
+    - History, Milestones, and Operational Status
+    - Media descriptions or URLs
+    
+    Return a JSON object with a single key "facts" which is a list of strings. 
+    Each string should be a single, concise technical fact.
+    If no relevant facts are found, return an empty list.
+    
+    TEXT:
+    {text}
+    """
+    
+    try:
+        completion = client.chat.completions.create(
+            model="llama3.2",
+            messages=[
+                {"role": "system", "content": "You are a technical data extractor. Output ONLY a JSON object with a 'facts' list. No preamble."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            timeout=180
+        )
+        data = json.loads(completion.choices[0].message.content)
+        return data.get("facts", [])
+    except Exception as e:
+        print(f"[-] [Map] Failed for part {part_num}: {e}")
+        return []
 
+def consolidate_facts(facts: list, client: OpenAI, craft_name: str) -> Optional[CraftExtraction]:
+    """Reduce step: Consolidate all extracted facts into the final schema."""
+    if not facts:
+        return None
+        
+    facts_text = "\n".join([f"- {f}" for f in facts])
+    
+    prompt = f"""
+    You are a technical data architect. Consolidate the following technical facts about the Wing-in-Ground (WIG) craft "{craft_name}" into the structured JSON schema provided.
+    
+    FACTS COLLECTED FROM RESEARCH:
+    {facts_text}
+    
+    You MUST output valid, parsable JSON matching this EXACT template. 
+    If a value is unknown, use null for numbers or "Unknown" for strings.
+    
     {{
         "found_craft": true,
         "data_confidence_score": 1.0,
@@ -196,73 +243,90 @@ def extract_craft_data(text: str, client: OpenAI, craft_name: str) -> Optional[C
         "designer": "Unknown",
         "manufacturer": "Unknown",
         "country_of_origin": "Unknown",
-        "year_introduced": 1980,
+        "year_introduced": null,
         "operational_era": "Unknown",
         "status": "Unknown",
         "craft_type": "Ekranoplan",
-        "description_history": "Detailed string describing history.",
-        "operational_history": "Detailed string describing operations.",
-        "known_accidents": "Detailed string describing accidents.",
+        "description_history": "Summary of history.",
+        "operational_history": "Details of operations.",
+        "known_accidents": "Accident details if any.",
         "current_location": "Unknown",
         "specifications": {{
-            "length_m": null,
-            "beam_m": null,
-            "wingspan_m": null,
-            "height_m": null,
-            "empty_weight_kg": null,
-            "max_takeoff_weight_kg": null,
-            "payload_capacity_kg": null,
-            "max_speed_kmh": null,
-            "cruise_speed_kmh": null,
-            "range_km": null,
-            "ground_effect_altitude_m": null,
-            "service_ceiling_m": null,
-            "wing_configuration": null,
-            "hull_material": null,
-            "crew_capacity": null,
-            "passenger_capacity": null
+            "length_m": null, "beam_m": null, "wingspan_m": null, "height_m": null,
+            "empty_weight_kg": null, "max_takeoff_weight_kg": null, "payload_capacity_kg": null,
+            "max_speed_kmh": null, "cruise_speed_kmh": null, "range_km": null,
+            "ground_effect_altitude_m": null, "service_ceiling_m": null,
+            "wing_configuration": null, "hull_material": null, "crew_capacity": null, "passenger_capacity": null
         }},
         "engines": [
-            {{"engine_name": "example", "engine_type": "turbofan", "quantity": 1, "thrust_kn": null, "power_kw": null}}
+            {{"engine_name": "name", "engine_type": "type", "quantity": 1, "thrust_kn": null, "power_kw": null}}
         ],
         "media": [
-            {{"media_type": "Image", "url": "https://example.com/img.jpg", "attribution": null, "description": null}}
+            {{"media_type": "Image", "url": "url", "attribution": null, "description": null}}
         ],
         "milestones": [
-            {{"year": 1980, "event_title": "Example", "event_description": null}}
+            {{"year": 2000, "event_title": "title", "event_description": "desc"}}
         ]
     }}
-    
-    TEXT:
-    {text}
     """
-    import concurrent.futures
-
-    def _call_ollama():
-        return client.chat.completions.create(
+    
+    try:
+        completion = client.chat.completions.create(
             model="llama3.2",
             messages=[
-                {"role": "system", "content": "You are a perfect JSON generator. Never output schemas, only output concrete data formatted perfectly to the JSON template. Do not include any text outside the JSON."},
+                {"role": "system", "content": "You are a perfect JSON generator. Output only the requested JSON object."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
             temperature=0.1,
-            timeout=90  # HTTP-level socket timeout
+            timeout=180
         )
-
-    try:
-        # Thread-based hard deadline: if Ollama doesn't respond in 90s, cancel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(_call_ollama)
-            try:
-                completion = future.result(timeout=90)
-            except concurrent.futures.TimeoutError:
-                print(f"[-] AI Extraction timed out after 90s for '{craft_name}' — skipping.")
-                return None
         return CraftExtraction.model_validate_json(completion.choices[0].message.content)
     except Exception as e:
-        print(f"[-] AI Extraction failed: {e}")
+        print(f"[-] [Reduce] Failed: {e}")
         return None
+
+def merge_extractions(base: CraftExtraction, new: CraftExtraction) -> CraftExtraction:
+    """Merges a new extraction into the base one, preferring non-null/non-placeholder values."""
+    if not base: return new
+    if not new: return base
+
+    # Simple fields
+    for field in ['alternative_names', 'designer', 'manufacturer', 'country_of_origin', 'operational_era', 'status', 'craft_type', 'current_location']:
+        val = getattr(new, field)
+        if val and val not in [None, "Unknown", "null", ""]:
+            setattr(base, field, val)
+    
+    # Large text fields (concatenate if different)
+    for field in ['description_history', 'operational_history', 'known_accidents']:
+        val = getattr(new, field)
+        if val and val not in [None, "null", ""] and val not in getattr(base, field):
+            old_val = getattr(base, field) or ""
+            setattr(base, field, (old_val + "\n\n" + val).strip())
+
+    # Specifications
+    if new.specifications:
+        if not base.specifications:
+            base.specifications = new.specifications
+        else:
+            for field, val in new.specifications.model_dump().items():
+                if val is not None:
+                    setattr(base.specifications, field, val)
+
+    # Lists (append if unique)
+    def append_unique(base_list, new_list, key_attr):
+        existing_keys = {getattr(i, key_attr) for i in base_list if hasattr(i, key_attr)}
+        for item in new_list:
+            if hasattr(item, key_attr) and getattr(item, key_attr) not in existing_keys:
+                base_list.append(item)
+            elif not hasattr(item, key_attr):
+                base_list.append(item)
+
+    append_unique(base.engines, new.engines, 'engine_name')
+    append_unique(base.media, new.media, 'url')
+    append_unique(base.milestones, new.milestones, 'event_title')
+
+    return base
 
 def ingest_to_db(extraction: CraftExtraction, url: str, existing_craft: Craft, reconcile: bool = False) -> list:
     session = get_session()
@@ -425,11 +489,47 @@ def main():
             update_crawler_state(craft_name=query, status="Insufficient Text Content", progress=0)
             continue
             
-        update_crawler_state(craft_name=query, status="Extracting via AI (Ollama)...", progress=60)
-        extraction = extract_craft_data(text, client, target_craft.name)
-        if extraction:
-            update_crawler_state(craft_name=query, status="Saving to Database...", progress=90)
-            ingest_to_db(extraction, url, existing_craft=target_craft)
+        # Divide text into 4000-character chunks for Map-Reduce
+        chunk_size = 4000
+        chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+        all_facts = []
+        
+        for idx, chunk in enumerate(chunks):
+            part_num = idx + 1
+            update_crawler_state(
+                craft_name=query, 
+                status=f"AI Fact Mapping (Part {part_num}/{len(chunks)})...", 
+                progress=60 + int((idx / len(chunks)) * 20),
+                ai_part=part_num,
+                ai_total=len(chunks)
+            )
+            
+            start_t = time.time()
+            chunk_facts = extract_facts_from_chunk(chunk, client, target_craft.name, part_num, len(chunks))
+            duration = round(time.time() - start_t, 1)
+            
+            if chunk_facts:
+                all_facts.extend(chunk_facts)
+                update_crawler_state(
+                    craft_name=query, 
+                    status=f"Map Part {part_num} OK", 
+                    progress=60 + int((part_num / len(chunks)) * 20),
+                    ai_part=part_num,
+                    ai_total=len(chunks),
+                    ai_time=duration
+                )
+            else:
+                print(f"[-] No facts found in part {part_num}")
+
+        if all_facts:
+            update_crawler_state(craft_name=query, status="Consolidating Facts (Reduce)...", progress=85)
+            final_extraction = consolidate_facts(all_facts, client, target_craft.name)
+        else:
+            final_extraction = None
+        
+        if final_extraction:
+            update_crawler_state(craft_name=query, status="Saving to Database...", progress=90, ai_time=0)
+            ingest_to_db(final_extraction, url, existing_craft=target_craft)
             
             # Ensure it is removed from the queue
             session = get_session()
@@ -440,7 +540,7 @@ def main():
             session.close()
             update_crawler_state(craft_name=query, status="Completed", progress=100)
         else:
-            print("[-] AI Extraction Failed.")
+            print("[-] AI Extraction Failed for all parts.")
             session = get_session()
             craft = session.query(Craft).get(target_craft.id)
             if craft:

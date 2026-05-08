@@ -1,8 +1,12 @@
 {
-  "current_craft": "Aqualet",
-  "status": "Extracting via AI (Ollama)...",
-  "progress": 60,
-  "queue_remaining": 162,
-  "total_processed": 26,
-  "last_updated": "2026-05-08T09:56:53.196453"
+  "current_craft": "Aquaglide 30",
+  "status": "AI Fact Mapping (Part 3/4)...",
+  "progress": 70,
+  "queue_remaining": 150,
+  "total_processed": 36,
+  "ai_model": "llama3.2",
+  "ai_part": 3,
+  "ai_total": 4,
+  "ai_last_time_s": 0,
+  "last_updated": "2026-05-08T15:39:00.171145"
 }

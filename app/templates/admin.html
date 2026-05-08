@@ -472,6 +472,23 @@
         </div>
     </div>
 
+    <!-- AI Engine Row -->
+    <div class="card-label" style="margin-top: 1rem; margin-bottom: 0.5rem;">AI Extraction Engine</div>
+    <div class="stats-row section-gap">
+        <div class="stat-card">
+            <div class="stat-label">LLM Model</div>
+            <div class="stat-value dim" id="aiModel" style="font-size: 1.5rem;">—</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Extraction Progress</div>
+            <div class="stat-value accent" id="aiParts" style="font-size: 1.5rem;">Part — / —</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Last Inference Time</div>
+            <div class="stat-value warning" id="aiTime" style="font-size: 1.5rem;">—s</div>
+        </div>
+    </div>
+
     <!-- Main Processing Card -->
     <div class="card section-gap">
         <div class="flex-between" id="craftBanner">
@@ -684,6 +701,15 @@
             document.getElementById('lastUpdated').textContent =
                 state.last_updated ? 'Updated ' + fmtTime(state.last_updated) : '—';
 
+            // AI Metrics
+            document.getElementById('aiModel').textContent = state.ai_model || '—';
+            if (state.ai_total > 0) {
+                document.getElementById('aiParts').textContent = `Part ${state.ai_part} / ${state.ai_total}`;
+            } else {
+                document.getElementById('aiParts').textContent = '—';
+            }
+            document.getElementById('aiTime').textContent = state.ai_last_time_s ? state.ai_last_time_s + 's' : '—';
+
             // Pipeline steps
             updatePipeline(isStale ? 0 : progress);
 
@@ -691,11 +717,17 @@
             setPill(state, isStale);
 
             // Log new state changes
-            const sig = `${state.current_craft}|${state.status}|${progress}`;
+            const sig = `${state.current_craft}|${state.status}|${progress}|${state.ai_part}`;
             if (!lastState || lastState !== sig) {
                 const cls = msgClass(state.status);
-                const craftPart = state.current_craft ? ` [${state.current_craft}]` : '';
-                addLog(fmtTime(state.last_updated || new Date().toISOString()), `${newStatus}${craftPart}`, cls);
+                let msg = newStatus;
+                if (state.current_craft && state.current_craft !== 'None') {
+                    msg += ` [${state.current_craft}]`;
+                }
+                if (state.ai_last_time_s > 0 && (newStatus.includes('OK') || newStatus.includes('Completed'))) {
+                    msg += ` (took ${state.ai_last_time_s}s)`;
+                }
+                addLog(fmtTime(state.last_updated || new Date().toISOString()), msg, cls);
                 lastState = sig;
             }
 
