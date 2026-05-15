@@ -1,12 +1,12 @@
 {
-  "current_craft": "Aquaglide 30",
-  "status": "AI Fact Mapping (Part 3/4)...",
-  "progress": 70,
-  "queue_remaining": 150,
-  "total_processed": 36,
+  "current_craft": "750",
+  "status": "Consolidating Facts (Reduce)...",
+  "progress": 85,
+  "queue_remaining": 172,
+  "total_processed": 15,
   "ai_model": "llama3.2",
-  "ai_part": 3,
-  "ai_total": 4,
+  "ai_part": 0,
+  "ai_total": 0,
   "ai_last_time_s": 0,
-  "last_updated": "2026-05-08T15:39:00.171145"
+  "last_updated": "2026-05-15T14:37:10.128504"
 }

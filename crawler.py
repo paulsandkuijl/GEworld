@@ -110,15 +110,20 @@ class CraftExtraction(BaseModel):
 # --------------------------------------------------------------------------------
 # CORE CRAWLER LOGIC
 # --------------------------------------------------------------------------------
-def perform_search(query: str, max_results: int = 2) -> list[dict]:
-    print(f"[*] Searching Wikipedia for: '{query}'")
+def perform_search(query: str, max_results: int = 3) -> list[dict]:
+    # Add context to search if the query is too short or likely generic
+    search_query = query
+    if len(query) < 5 or query.isdigit():
+        search_query = f"{query} ground effect craft ekranoplan"
+    
+    print(f"[*] Searching Wikipedia for: '{search_query}'")
     try:
         headers = {'User-Agent': 'GroundEffectCrawler/2.0'}
         url = "https://en.wikipedia.org/w/api.php"
         params = {
             "action": "query",
             "list": "search",
-            "srsearch": query,
+            "srsearch": search_query,
             "utf8": "",
             "format": "json"
         }
@@ -127,10 +132,25 @@ def perform_search(query: str, max_results: int = 2) -> list[dict]:
         data = r.json()
         
         urls = []
-        for item in data.get('query', {}).get('search', [])[:max_results]:
-            title_formatted = item['title'].replace(' ', '_')
-            urls.append({'href': f"https://en.wikipedia.org/wiki/{title_formatted}"})
+        search_results = data.get('query', {}).get('search', [])
+        
+        for item in search_results:
+            title = item['title']
+            snippet = item.get('snippet', '').lower()
             
+            # Simple heuristic: skip results that are obviously not about vehicles
+            # if we have multiple results to choose from.
+            bad_keywords = ["bridge", "tunnel", "highway", "river", "constellation", "galaxy", "film", "song"]
+            if any(bk in title.lower() or bk in snippet for bk in bad_keywords):
+                if len(urls) < max_results: # Still include if we have nothing else, but maybe skip?
+                    continue
+
+            title_formatted = title.replace(' ', '_')
+            urls.append({'href': f"https://en.wikipedia.org/wiki/{title_formatted}", 'title': title})
+            
+            if len(urls) >= max_results:
+                break
+                
         return urls
     except Exception as e:
         print(f"[-] Search failed: {e}")
@@ -206,7 +226,7 @@ def extract_facts_from_chunk(text: str, client: OpenAI, craft_name: str, part_nu
         completion = client.chat.completions.create(
             model="llama3.2",
             messages=[
-                {"role": "system", "content": "You are a technical data extractor. Output ONLY a JSON object with a 'facts' list. No preamble."},
+                {"role": "system", "content": "You are a technical data extractor. Output ONLY a JSON object with a 'facts' list. No preamble. If no specific technical facts about the craft are found, return {'facts': []}."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
@@ -235,7 +255,7 @@ def consolidate_facts(facts: list, client: OpenAI, craft_name: str) -> Optional[
     You MUST output valid, parsable JSON matching this EXACT template. 
     If a value is unknown, use null for numbers or "Unknown" for strings.
     
-    {{
+    {
         "found_craft": true,
         "data_confidence_score": 1.0,
         "name": "{craft_name}",
@@ -247,27 +267,21 @@ def consolidate_facts(facts: list, client: OpenAI, craft_name: str) -> Optional[
         "operational_era": "Unknown",
         "status": "Unknown",
         "craft_type": "Ekranoplan",
-        "description_history": "Summary of history.",
-        "operational_history": "Details of operations.",
-        "known_accidents": "Accident details if any.",
+        "description_history": "Unknown",
+        "operational_history": "Unknown",
+        "known_accidents": "Unknown",
         "current_location": "Unknown",
-        "specifications": {{
+        "specifications": {
             "length_m": null, "beam_m": null, "wingspan_m": null, "height_m": null,
             "empty_weight_kg": null, "max_takeoff_weight_kg": null, "payload_capacity_kg": null,
             "max_speed_kmh": null, "cruise_speed_kmh": null, "range_km": null,
             "ground_effect_altitude_m": null, "service_ceiling_m": null,
             "wing_configuration": null, "hull_material": null, "crew_capacity": null, "passenger_capacity": null
-        }},
-        "engines": [
-            {{"engine_name": "name", "engine_type": "type", "quantity": 1, "thrust_kn": null, "power_kw": null}}
-        ],
-        "media": [
-            {{"media_type": "Image", "url": "url", "attribution": null, "description": null}}
-        ],
-        "milestones": [
-            {{"year": 2000, "event_title": "title", "event_description": "desc"}}
-        ]
-    }}
+        },
+        "engines": [],
+        "media": [],
+        "milestones": []
+    }
     """
     
     try:
@@ -478,6 +492,15 @@ def main():
         url = results[0].get('href')
         update_crawler_state(craft_name=query, status=f"Scraping {url}...", progress=30)
         text = scrape_url_text(url)
+        
+        # Validation: Check if the text actually mentions relevant keywords
+        wig_keywords = ["ground effect", "ekranoplan", "wing-in-ground", "wig", "aerodynamic lift", "surface effect"]
+        if not any(kw in text.lower() for kw in wig_keywords) and len(results) > 1:
+            print(f"[*] Primary result {url} seems irrelevant. Trying secondary...")
+            url = results[1].get('href')
+            update_crawler_state(craft_name=query, status=f"Scraping secondary {url}...", progress=35)
+            text = scrape_url_text(url)
+
         if len(text) < 200:
             print("[-] Scraped text was too short...")
             session = get_session()
