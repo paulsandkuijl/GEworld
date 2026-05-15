@@ -1,12 +1,12 @@
 {
-  "current_craft": "750",
+  "current_craft": "AWIG-1",
   "status": "Consolidating Facts (Reduce)...",
   "progress": 85,
-  "queue_remaining": 172,
+  "queue_remaining": 156,
   "total_processed": 15,
   "ai_model": "llama3.2",
   "ai_part": 0,
   "ai_total": 0,
   "ai_last_time_s": 0,
-  "last_updated": "2026-05-15T14:37:10.128504"
+  "last_updated": "2026-05-15T15:26:41.959312"
 }

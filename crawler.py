@@ -1,8 +1,12 @@
 import os
 import datetime
 import requests
+import os
+import uuid
 import json
 import time
+import concurrent.futures
+from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -156,6 +160,20 @@ def perform_search(query: str, max_results: int = 3) -> list[dict]:
         print(f"[-] Search failed: {e}")
         return []
 
+def perform_extended_search(query: str, max_results: int = 5) -> list[str]:
+    print(f"[*] Performing extended web search for: '{query}'")
+    urls = []
+    try:
+        search_results = google_search(query, num_results=max_results * 2, sleep_interval=1)
+        for url in search_results:
+            if "wikipedia.org" not in url:
+                urls.append(url)
+            if len(urls) >= max_results:
+                break
+    except Exception as e:
+        print(f"[-] Extended search failed: {e}")
+    return urls
+
 def scrape_url_text(url: str) -> str:
     print(f"[*] Scraping URL: {url}...")
     try:
@@ -181,13 +199,22 @@ def scrape_url_text(url: str) -> str:
         for tag in soup(noise_tags):
             tag.decompose()
 
-        # Also remove common ad/cookie/comment class names
+        # Remove common ad/cookie/comment class names
         for cls in ["cookie", "banner", "advertisement", "popup", "sidebar", "comment", "share", "social", "promo"]:
             for el in soup.find_all(class_=lambda c: c and cls in c.lower()):
                 el.decompose()
 
         # Prefer the main article content if it exists
         main_content = soup.find('article') or soup.find('main') or soup.find(id='content') or soup.find(id='bodyContent') or soup.body
+        
+        image_urls = []
+        if main_content:
+            for img in main_content.find_all('img'):
+                src = img.get('src')
+                if src and not src.startswith('data:') and 'icon' not in src.lower() and 'logo' not in src.lower() and 'svg' not in src.lower():
+                    if src.startswith('//'): src = 'https:' + src
+                    elif src.startswith('/'): src = 'https://en.wikipedia.org' + src 
+                    image_urls.append(src)
         
         if main_content:
             text = main_content.get_text(separator=' ', strip=True)
@@ -198,6 +225,10 @@ def scrape_url_text(url: str) -> str:
         import re
         text = re.sub(r'\s{2,}', ' ', text)
         
+        if image_urls:
+            unique_images = list(dict.fromkeys(image_urls))[:5]
+            text += "\n\n--- RELEVANT IMAGE URLS ---\n" + "\n".join(unique_images)
+            
         print(f"[*] Scraped {len(text)} characters of clean text.")
         return text[:15000]  # Allow more text since we will chunk it now
     except Exception as e:
@@ -224,7 +255,7 @@ def extract_facts_from_chunk(text: str, client: OpenAI, craft_name: str, part_nu
     
     try:
         completion = client.chat.completions.create(
-            model="llama3.2",
+            model="llama3.2:1b",
             messages=[
                 {"role": "system", "content": "You are a technical data extractor. Output ONLY a JSON object with a 'facts' list. No preamble. If no specific technical facts about the craft are found, return {'facts': []}."},
                 {"role": "user", "content": prompt}
@@ -255,7 +286,7 @@ def consolidate_facts(facts: list, client: OpenAI, craft_name: str) -> Optional[
     You MUST output valid, parsable JSON matching this EXACT template. 
     If a value is unknown, use null for numbers or "Unknown" for strings.
     
-    {
+    {{
         "found_craft": true,
         "data_confidence_score": 1.0,
         "name": "{craft_name}",
@@ -271,17 +302,17 @@ def consolidate_facts(facts: list, client: OpenAI, craft_name: str) -> Optional[
         "operational_history": "Unknown",
         "known_accidents": "Unknown",
         "current_location": "Unknown",
-        "specifications": {
+        "specifications": {{
             "length_m": null, "beam_m": null, "wingspan_m": null, "height_m": null,
             "empty_weight_kg": null, "max_takeoff_weight_kg": null, "payload_capacity_kg": null,
             "max_speed_kmh": null, "cruise_speed_kmh": null, "range_km": null,
             "ground_effect_altitude_m": null, "service_ceiling_m": null,
             "wing_configuration": null, "hull_material": null, "crew_capacity": null, "passenger_capacity": null
-        },
+        }},
         "engines": [],
         "media": [],
         "milestones": []
-    }
+    }}
     """
     
     try:
@@ -421,11 +452,38 @@ def ingest_to_db(extraction: CraftExtraction, url: str, existing_craft: Craft, r
             quantity=e.quantity, thrust_kn=e.thrust_kn, power_kw=e.power_kw
         ))
         
+    def download_and_save_image(url: str, dest_dir: str = "app/static/media") -> Optional[str]:
+        if not url.startswith("http"): return None
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            resp = requests.get(url, stream=True, timeout=10)
+            resp.raise_for_status()
+            parsed = urlparse(url)
+            ext = os.path.splitext(parsed.path)[1]
+            if not ext:
+                content_type = resp.headers.get('Content-Type', '')
+                if 'image/jpeg' in content_type: ext = '.jpg'
+                elif 'image/png' in content_type: ext = '.png'
+                elif 'image/webp' in content_type: ext = '.webp'
+                else: ext = '.jpg'
+            filename = f"{uuid.uuid4()}{ext}"
+            filepath = os.path.join(dest_dir, filename)
+            with open(filepath, 'wb') as f:
+                for chunk in resp.iter_content(8192):
+                    f.write(chunk)
+            return f"/static/media/{filename}"
+        except Exception as e:
+            print(f"[-] Failed to download image {url}: {e}")
+            return None
+            
     for m in extraction.media:
         if m.url:
-            craft.media.append(Media(
-                media_type=m.media_type, url=m.url, attribution=m.attribution, description=m.description
-            ))
+            local_url = download_and_save_image(m.url)
+            if local_url:
+                craft.media.append(Media(
+                    media_type=m.media_type, url=local_url, attribution=m.attribution, description=m.description
+                ))
+                break  # Only keep one successfully downloaded image
             
     for ms in extraction.milestones:
         craft.milestones.append(Milestone(
@@ -439,7 +497,21 @@ def ingest_to_db(extraction: CraftExtraction, url: str, existing_craft: Craft, r
     session.close()
     return conflicts
 
+def needs_more_info(extraction: CraftExtraction) -> bool:
+    if not extraction: return True
+    m = 0
+    if not extraction.description_history or extraction.description_history == "Unknown": m += 1
+    if not extraction.manufacturer or extraction.manufacturer == "Unknown": m += 1
+    if not extraction.specifications or not extraction.specifications.length_m: m += 1
+    if not extraction.specifications or not extraction.specifications.max_speed_kmh: m += 1
+    # If 2 or more key fields are missing, we consider it missing info
+    return m >= 2
+
 def main():
+    import sys
+    if sys.stdout.encoding.lower() != 'utf-8':
+        sys.stdout.reconfigure(encoding='utf-8')
+        
     print("\n============= GROUND EFFECT CRAFT AI CRAWLER =============")
     # max_retries=0 prevents the client from silently re-issuing hung requests
     client = OpenAI(base_url='http://localhost:11434/v1', api_key='ollama', max_retries=0)
@@ -512,23 +584,32 @@ def main():
             update_crawler_state(craft_name=query, status="Insufficient Text Content", progress=0)
             continue
             
-        # Divide text into 4000-character chunks for Map-Reduce
-        chunk_size = 4000
+        # Divide text into 12000-character chunks for Map-Reduce
+        chunk_size = 12000
         chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-        all_facts = []
         
-        for idx, chunk in enumerate(chunks):
+        # Pre-filter chunks to only send those with relevant keywords
+        def is_relevant_chunk(c: str) -> bool:
+            keywords = ["engine", "speed", "kg", "meters", "designed", "built", "length", "weight", "payload", "wing", "range", "knot", "km/h", "mph"]
+            return any(kw in c.lower() for kw in keywords)
+
+        valid_chunks = [c for c in chunks if is_relevant_chunk(c)]
+        if not valid_chunks:
+            valid_chunks = chunks[:2] # Fallback
+            
+        all_facts = []
+        for idx, chunk in enumerate(valid_chunks):
             part_num = idx + 1
             update_crawler_state(
                 craft_name=query, 
-                status=f"AI Fact Mapping (Part {part_num}/{len(chunks)})...", 
-                progress=60 + int((idx / len(chunks)) * 20),
+                status=f"AI Fact Mapping (Part {part_num}/{len(valid_chunks)})...", 
+                progress=60 + int((idx / len(valid_chunks)) * 20),
                 ai_part=part_num,
-                ai_total=len(chunks)
+                ai_total=len(valid_chunks)
             )
             
             start_t = time.time()
-            chunk_facts = extract_facts_from_chunk(chunk, client, target_craft.name, part_num, len(chunks))
+            chunk_facts = extract_facts_from_chunk(chunk, client, target_craft.name, part_num, len(valid_chunks))
             duration = round(time.time() - start_t, 1)
             
             if chunk_facts:
@@ -536,9 +617,9 @@ def main():
                 update_crawler_state(
                     craft_name=query, 
                     status=f"Map Part {part_num} OK", 
-                    progress=60 + int((part_num / len(chunks)) * 20),
+                    progress=60 + int((part_num / len(valid_chunks)) * 20),
                     ai_part=part_num,
-                    ai_total=len(chunks),
+                    ai_total=len(valid_chunks),
                     ai_time=duration
                 )
             else:
@@ -549,6 +630,38 @@ def main():
             final_extraction = consolidate_facts(all_facts, client, target_craft.name)
         else:
             final_extraction = None
+            
+        # --- EXTENDED SEARCH FOR MISSING INFO ---
+        search_query = f"{query} ground effect craft ekranoplan"
+        if needs_more_info(final_extraction):
+            update_crawler_state(craft_name=query, status="Fetching additional sites...", progress=86)
+            extended_urls = perform_extended_search(search_query, max_results=5)
+            for idx, ext_url in enumerate(extended_urls):
+                update_crawler_state(craft_name=query, status=f"Scraping extra site {idx+1}/{len(extended_urls)}...", progress=86 + idx)
+                ext_text = scrape_url_text(ext_url)
+                if len(ext_text) < 200: continue
+                
+                # We limit extra sites to chunks that have keywords
+                ext_chunks = [ext_text[i:i + chunk_size] for i in range(0, len(ext_text), chunk_size)]
+                valid_ext_chunks = [c for c in ext_chunks if is_relevant_chunk(c)][:3] # max 3 chunks
+                
+                ext_facts = []
+                for idx, chunk in enumerate(valid_ext_chunks):
+                    facts = extract_facts_from_chunk(chunk, client, target_craft.name, idx+1, len(valid_ext_chunks))
+                    if facts: ext_facts.extend(facts)
+                    
+                if ext_facts:
+                    ext_extraction = consolidate_facts(ext_facts, client, target_craft.name)
+                    if ext_extraction:
+                        if not final_extraction:
+                            final_extraction = ext_extraction
+                        else:
+                            final_extraction = merge_extractions(final_extraction, ext_extraction)
+                            
+                        # If we have enough info now, we can stop scraping additional sites early
+                        if not needs_more_info(final_extraction):
+                            print("[+] Sufficient info gathered from extended search. Stopping extra scraping.")
+                            break
         
         if final_extraction:
             update_crawler_state(craft_name=query, status="Saving to Database...", progress=90, ai_time=0)
